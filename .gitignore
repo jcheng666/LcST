@@ -1,0 +1,98 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+installed_deps.txt
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# Deep Learning / ML
+*.pth
+*.pt
+*.ckpt
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+checkpoints/
+models/
+weights/
+outputs/
+results/
+runs/
+tensorboard/
+wandb/
+
+# Data
+./data/
+dataset/
+datasets/
+*.csv
+*.zip
+*.tar.gz
+*.rar
+
+# Logs
+logs/
+*.log
+
+# System
+.DS_Store
+Thumbs.db
+*.bak
+*.tmp
+*.temp
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+.tox/
+.nox/
+
+# Distribution
+*.manifest
+*.spec
+
+# uv
+.python-version
+.ace-tool/
+.sisyphus/
+docs/plans/
+.worktrees/
+worktrees/
