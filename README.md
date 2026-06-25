@@ -72,7 +72,3 @@ Each run creates a timestamped directory under `--log_root` containing:
 | `snapshot/command.txt`| Exact shell command invoked                 |
 | `metrics.json`        | Final test metrics (MAE, RMSE, MAPE, etc.)  |
 | `loss.png`            | Training and validation loss curves         |
-
-## License
-
-This project is released for academic use. See the paper for details.
