@@ -1,32 +1,71 @@
-# LCSTM-3stage
+# LcST: [Paper Title]
 
-LCSTM-3stage 是基于时空窗口建模的交通预测与缺失值补全实验代码库。主代码位于 `src/`，实验脚本位于 `scripts/`，仓库根目录只保留项目配置和说明文档。
+This repository contains the source code and experiment scripts for the paper
+"[Paper Title]", submitted to PVLDB Vol. XX.
 
-## 默认辅助节点策略
+## Repository Structure
 
-当前主版本默认使用邻居辅助节点池：
-
-- `--n_aux 16`
-- `--aux_neighbor_order topological`
-- `--aux_neighbor_fill higher_order`
-
-含义如下：
-
-- `topological`：候选邻居先按有向邻接图的拓扑秩排序，同秩时按节点编号排序。
-- `higher_order`：若 1-hop 邻居不足 `n_aux`，依次补入 2-hop、3-hop 邻居；仍不足时再重复已有候选。
-
-如需复现实验对照，可以显式切回旧策略：
-
-```bash
---aux_neighbor_order index --aux_neighbor_fill repeat_1hop
+```
+src/           Main source code (model, trainer, data pipeline, utilities)
+scripts/       Shell scripts for launching experiments
+pyproject.toml Project configuration and dependencies
 ```
 
-## 运行提示
+## Hardware & Software Requirements
 
-`pyproject.toml` 已声明本 README 为项目说明文件。做轻量语法检查时可以使用：
+- Python ≥ 3.10 with CUDA-capable GPU (≥ 8 GB VRAM recommended)
+- Dependencies managed via [uv](https://github.com/astral-sh/uv) (`uv.lock`)
+- Tested on Ubuntu 22.04, CUDA 12.x / 13.0, NVIDIA A40 (48 GB)
+
+## Setup
 
 ```bash
-uv run --no-project python -m compileall -q src scripts
+# Clone the repository
+git clone https://github.com/jcheng666/LcST.git
+cd LcST
+
+# Install dependencies
+uv sync
 ```
 
-正式实验参数以 `experiments.log` 首行 `Namespace(...)` 或日志目录中的 `snapshot/args.json` 为准。
+## Reproducing Experiments
+
+All experiments are launched via `src/main.py`. Key parameters are documented
+in `src/utils/argsinit.py`.
+
+### Example: PEMS03 Forecasting
+
+```bash
+uv run python src/main.py \
+  --desc pems03_gpt2_lora \
+  --dataset PEMS03FLOW \
+  --data_path /path/to/pems03.npz \
+  --adj_filename /path/to/pems03_adj.csv \
+  --model gpt2 --lora \
+  --sample_len 2016 --output_len 12 \
+  --unit_len 36 \
+  --n_aux 16 --aux_neighbor_order topological --aux_neighbor_fill higher_order \
+  --epoch 100 --batch_size 64 \
+  --log_root ./logs
+```
+
+Adjust `--data_path` and `--adj_filename` to point to your local dataset
+copies.  The datasets (PEMS03/04/07/08) are publicly available from
+[PeMS](https://pems.dot.ca.gov/).
+
+### Experiment Logs
+
+Each run creates a timestamped directory under `--log_root` containing:
+
+| File                  | Content                                     |
+|-----------------------|---------------------------------------------|
+| `experiments.log`     | Full training log with per-step metrics     |
+| `snapshot/args.json`  | Exact arguments used for the run            |
+| `snapshot/HEAD`       | Git commit hash at launch time              |
+| `snapshot/command.txt`| Exact shell command invoked                 |
+| `metrics.json`        | Final test metrics (MAE, RMSE, MAPE, etc.)  |
+| `loss.png`            | Training and validation loss curves         |
+
+## License
+
+This project is released for academic use. See the paper for details.
