@@ -1,7 +1,6 @@
-# LcST: [Paper Title]
+# LcST
 
-This repository contains the source code and experiment scripts for the paper
-"[Paper Title]", submitted to PVLDB Vol. XX.
+Source code and experiment scripts for the paper submitted to PVLDB Vol. XX.
 
 ## Repository Structure
 
