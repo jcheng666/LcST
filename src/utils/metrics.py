@@ -40,32 +40,52 @@ def MAPE_torch_node(pred, true, mask_value=1e-6):
     return torch.sum(torch.abs(torch.div((true - pred)*mask, true)),dim=-1)/count
 
 
-def cal_metrics(predicts,targets):
+def cal_metrics(predicts, targets, eval_mask=None):
     F = targets.shape[-1]
 
     mae = []
     for f in range(F):
-        mae.append(MAE_torch(pred=predicts[...,f],true=targets[...,f]).item())
+        if eval_mask is not None:
+            mask = eval_mask[..., f].bool()
+            mae.append(MAE_torch(pred=predicts[..., f][mask], true=targets[..., f][mask]).item())
+        else:
+            mae.append(MAE_torch(pred=predicts[..., f], true=targets[..., f]).item())
 
     rmse = []
     for f in range(F):
-        rmse.append(RMSE_torch(pred=predicts[...,f],true=targets[...,f]).item())
+        if eval_mask is not None:
+            mask = eval_mask[..., f].bool()
+            rmse.append(RMSE_torch(pred=predicts[..., f][mask], true=targets[..., f][mask]).item())
+        else:
+            rmse.append(RMSE_torch(pred=predicts[..., f], true=targets[..., f]).item())
 
     mape = []
     for f in range(F):
-        mape.append(MAPE_torch(pred=predicts[...,f],true=targets[...,f]).item())
+        if eval_mask is not None:
+            mask = eval_mask[..., f].bool()
+            mape.append(MAPE_torch(pred=predicts[..., f][mask], true=targets[..., f][mask]).item())
+        else:
+            mape.append(MAPE_torch(pred=predicts[..., f], true=targets[..., f]).item())
 
     mape_10 = []
     for f in range(F):
-        mask = targets[...,0] >= 10
-        mape_10.append(MAPE_torch(pred=predicts[...,f][mask],true=targets[...,f][mask]).item())
+        if eval_mask is not None:
+            mask = eval_mask[..., 0].bool() & (targets[..., 0] >= 10)
+            mape_10.append(MAPE_torch(pred=predicts[..., f][mask], true=targets[..., f][mask]).item())
+        else:
+            mask = targets[..., 0] >= 10
+            mape_10.append(MAPE_torch(pred=predicts[..., f][mask], true=targets[..., f][mask]).item())
 
     mape_20 = []
     for f in range(F):
-        mask = targets[...,0] >= 20
-        mape_20.append(MAPE_torch(pred=predicts[...,f][mask],true=targets[...,f][mask]).item())
+        if eval_mask is not None:
+            mask = eval_mask[..., 0].bool() & (targets[..., 0] >= 20)
+            mape_20.append(MAPE_torch(pred=predicts[..., f][mask], true=targets[..., f][mask]).item())
+        else:
+            mask = targets[..., 0] >= 20
+            mape_20.append(MAPE_torch(pred=predicts[..., f][mask], true=targets[..., f][mask]).item())
 
-    return mae,rmse,mape,mape_10,mape_20
+    return mae, rmse, mape, mape_10, mape_20
 
 
 def average_metric_lists(metric_lists):

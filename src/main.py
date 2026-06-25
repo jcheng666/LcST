@@ -37,6 +37,7 @@ def build_model(args, basemodel, output_len, adj_mx):
         backbone_capacity=args.backbone_capacity,
         node_pe_k=args.node_pe_k,
         node_pe_enabled=not args.no_node_pe,
+        no_global_token=args.no_global_token,
     ).cuda()
 
 
@@ -47,6 +48,8 @@ if __name__ == "__main__":
     window_size = args.sample_len
     if args.target_mode == "forecast":
         window_size = args.sample_len + args.output_len
+    elif args.target_mode == "impute_full":
+        window_size = args.sample_len
 
     basemodel = build_backbone(args)
 

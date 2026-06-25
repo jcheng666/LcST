@@ -52,6 +52,10 @@ class GraphContext:
         self._node_pe_enabled = node_pe_enabled and pe_k > 0
         self._raw_eigvecs: Optional[Tensor] = None
 
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
     @jaxtyped(typechecker=beartype)
     def sample_neighbors(self, node_ids: Int[Tensor, "C"], device: torch.device) -> Int[Tensor, "C K"]:
         """Return (len(node_ids), n_aux) auxiliary-node IDs for each target node."""
@@ -107,6 +111,10 @@ class GraphContext:
     def invalidate_pe(self) -> None:
         """Drop cached eigenvectors (call when adjacency changes)."""
         self._raw_eigvecs = None
+
+    # ------------------------------------------------------------------
+    # Graph helpers (mirror spatial_retriever.py internals)
+    # ------------------------------------------------------------------
 
     def _adjacency(self) -> NDArray[np.bool_]:
         A = np.asarray(self._adj_mx.cpu().numpy())

@@ -32,6 +32,8 @@ def AddModelArgs(parser):
                         help="Laplacian PE eigenvectors to use (0 = disabled); adds topological identity to tokens")
     parser.add_argument("--no_node_pe", action="store_true",
                         help="explicitly disable Laplacian PE even when --node_pe_k > 0")
+    parser.add_argument("--no_global_token", action="store_true",
+                        help="disable global token (mean-pool over all nodes) in reasoner dispatch")
     parser.add_argument("--final_aux_pool_sets", default=3, type=int,
                         help="auxiliary pool sets averaged for the final test at training end")
     parser.add_argument("--routine_aux_pool_sets", default=1, type=int,
@@ -67,7 +69,7 @@ def AddTrainArgs(parser):
     parser.add_argument("--loss_type", default="mae", choices=["mae", "huber"], type=str)
     parser.add_argument("--huber_delta", default=30.0, type=float,
                         help="delta for HuberLoss when --loss_type huber")
-    parser.add_argument("--batch_size", default=64, type=int,
+    parser.add_argument("--batch_size", default=256, type=int,
                         help="target instances per optimizer step")
     parser.add_argument("--num_workers", default=4, type=int,
                         help="DataLoader worker processes")
@@ -109,9 +111,9 @@ def InitArgs():
     parser.add_argument(
         "--target_mode",
         default="forecast",
-        choices=["forecast", "impute_last"],
+        choices=["forecast", "impute_last", "impute_full"],
         type=str,
-        help="forecast: use sample_len context to predict output_len future steps; impute_last: use sample_len window and fill its last output_len steps",
+        help="forecast: use sample_len context to predict output_len future steps; impute_last: use sample_len window and fill its last output_len steps; impute_full: reconstruct entire sample_len window, loss only on mask=0 positions",
     )
 
     AddDataArgs(parser)

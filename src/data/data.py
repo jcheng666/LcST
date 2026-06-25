@@ -1,5 +1,5 @@
 import torch.utils.data
-from data.dataprovider import PEMSFLOWProvider, PEMSMISSINGProvider, NYCTAXIProvider
+from data.dataprovider import PEMSFLOWProvider, PEMSMISSINGProvider, NYCTAXIProvider, XTrafficProvider
 
 data_dict = {
     "PEMS08FLOW": PEMSFLOWProvider,
@@ -12,6 +12,7 @@ data_dict = {
     "PEMS07MISSING": PEMSMISSINGProvider,
     "NYCTAXI": NYCTAXIProvider,
     "CHITAXI": NYCTAXIProvider,
+    "XTRAFFIC": XTrafficProvider,
 }
 
 

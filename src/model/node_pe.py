@@ -38,6 +38,9 @@ def laplacian_eigvecs(
     eigvals, eigvecs = np.linalg.eigh(L)
     eigvecs = eigvecs[:, 1 : 1 + effective_k].astype(np.float64)  # skip λ₀
 
+    # ---- sign standardisation ----
+    # For each eigenvector, ensure the element with the largest absolute
+    # value is positive.  This resolves the arbitrary ± sign.
     for i in range(effective_k):
         col = eigvecs[:, i]
         max_idx = int(np.argmax(np.abs(col)))  # type: ignore[arg-type]

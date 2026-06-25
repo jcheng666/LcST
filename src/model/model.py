@@ -32,6 +32,7 @@ class STALLM(nn.Module):
         backbone_capacity: int = 4096,
         node_pe_k: int = 16,
         node_pe_enabled: bool = True,
+        no_global_token: bool = False,
     ):
         super().__init__()
 
@@ -42,6 +43,7 @@ class STALLM(nn.Module):
         self.n_aux = n_aux
         self.backbone_capacity = backbone_capacity
         self.emb_dim = basemodel.emb_dim
+        self.no_global_token = no_global_token
 
         self._aux_neighbor_order = aux_neighbor_order
         self._aux_neighbor_fill = aux_neighbor_fill
@@ -68,6 +70,10 @@ class STALLM(nn.Module):
         self._current_ctx: Optional[GraphContext] = None
         self._init_graph_ctx("default", adj_mx)
         self.window_encoder = WindowEncoder(self.tokenizer, self._current_graph_ctx())
+
+    # ------------------------------------------------------------------
+    # Graph management (GraphContext)
+    # ------------------------------------------------------------------
 
     def _init_graph_ctx(self, graph_key: str, adj_mx) -> None:
         ctx = GraphContext(
@@ -122,6 +128,10 @@ class STALLM(nn.Module):
     def init_sep_from_eos(self) -> bool:
         return self.reasoner.init_sep_from_eos()
 
+    # ------------------------------------------------------------------
+    # PE
+    # ------------------------------------------------------------------
+
     def _node_pe(self, device: torch.device) -> Optional[Tensor]:
         """Get projected Laplacian PE for the current graph.
 
@@ -135,13 +145,19 @@ class STALLM(nn.Module):
         eigvecs = raw.to(device=device)
         return self.reasoner.node_pe(eigvecs)
 
-    def _reasoner_dispatch(self, target_tok, aux_tok, target_ids, aux_ids, node_pe):
+    # ------------------------------------------------------------------
+    # Reasoner dispatch
+    # ------------------------------------------------------------------
+
+    def _reasoner_dispatch(self, target_tok, aux_tok, target_ids, aux_ids, node_pe,
+                           global_tok=None, global_pe=None):
         """Forward through the reasoner, chunking when the batch exceeds capacity."""
         C = target_tok.shape[0]
         if C <= self.backbone_capacity:
             return self.reasoner(
                 target_tok=target_tok, aux_tok=aux_tok,
                 target_ids=target_ids, aux_ids=aux_ids, node_pe=node_pe,
+                global_tok=global_tok, global_pe=global_pe,
             )
         outputs = []
         for start in range(0, C, self.backbone_capacity):
@@ -150,17 +166,24 @@ class STALLM(nn.Module):
                 target_tok=target_tok[start:end], aux_tok=aux_tok[start:end],
                 target_ids=target_ids[start:end], aux_ids=aux_ids[start:end],
                 node_pe=node_pe,
+                global_tok=global_tok[start:end] if global_tok is not None else None,
+                global_pe=global_pe,
             ))
         return torch.cat(outputs, dim=0)
+
+    # ------------------------------------------------------------------
+    # Unified encode / predict (WindowEncoder)
+    # ------------------------------------------------------------------
 
     @jaxtyped(typechecker=beartype)
     def encode(
         self,
         x: Float[Tensor, "B N TF"],
         target_node_ids: Int[Tensor, "C"] | None = None,
+        mask: Float[Tensor, "B N TF"] | None = None,
     ) -> EncodedBank:
         """Encode windows through WindowEncoder (sparse or full)."""
-        return self.window_encoder.encode(x, target_node_ids)
+        return self.window_encoder.encode(x, target_node_ids, mask)
 
     def predict(
         self,
@@ -174,7 +197,22 @@ class STALLM(nn.Module):
         aux_ids = self.sample_node_aux(node_ids, bank.tokens.device)
         target_tok, aux_tok = bank.query(sample_ids, node_ids, aux_ids)
         node_pe = self._node_pe(bank.tokens.device)
-        return self._reasoner_dispatch(target_tok, aux_tok, node_ids, aux_ids, node_pe)
+
+        # ---- global token: mean-pool over all nodes (detached from tokenizer) ----
+        global_tok = None
+        if not self.no_global_token:
+            global_tok = bank.tokens.detach().mean(dim=1)  # (B, D)
+            global_tok = global_tok[sample_ids].unsqueeze(1)  # (C, 1, D)
+
+        # ---- global PE: mean-pool all node PEs ----
+        global_pe = None
+        if not self.no_global_token and node_pe is not None:
+            global_pe = node_pe.mean(dim=0)  # (D,)
+
+        return self._reasoner_dispatch(
+            target_tok, aux_tok, node_ids, aux_ids, node_pe,
+            global_tok=global_tok, global_pe=global_pe,
+        )
 
     @jaxtyped(typechecker=beartype)
     def forward(
@@ -190,6 +228,10 @@ class STALLM(nn.Module):
         sample_ids = torch.arange(B, device=x.device).unsqueeze(1).expand(B, C).reshape(-1)
         node_ids = target_ids.unsqueeze(0).expand(B, C).reshape(-1)
         return self.predict(bank, sample_ids, node_ids).view(B, C, -1)
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
 
     def grad_state_dict(self):
         params_to_save = filter(lambda p: p[1].requires_grad, self.named_parameters())

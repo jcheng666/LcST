@@ -19,6 +19,10 @@ from trainer.optim import build_loss_fn, build_optimizer, build_scheduler
 from trainer.report import MetricsReporter
 from utils.metrics import average_eval_metrics, average_metric_lists, fmt
 
+# ---------------------------------------------------------------------------
+# Data-bundle management
+# ---------------------------------------------------------------------------
+
 
 def parse_multi_values(value, name):
     if value is None:
@@ -104,6 +108,10 @@ def bundle_aux_pool_sets(model, data_bundles, args):
     return aux_pool_sets_by_key
 
 
+# ---------------------------------------------------------------------------
+# Trainer
+# ---------------------------------------------------------------------------
+
 
 class Trainer:
 
@@ -127,11 +135,14 @@ class Trainer:
         self.aux_pool_sets_by_key = bundle_aux_pool_sets(model, data_bundles, args)
         self.train_states = [{"loader_iter": iter(bundle["train_loader"])} for bundle in data_bundles]
 
+    # -- helpers ------------------------------------------------------------
+
     def _routine_aux(self):
         return {b["key"]: routine_aux_pool_sets(self.aux_pool_sets_by_key[b["key"]], self.args)
                 for b in self.data_bundles}
 
-    # main loop
+    # -- main loop ----------------------------------------------------------
+
     def run(self, modelpath=None):
         args = self.args
         mylogger = self.mylogger
@@ -214,7 +225,7 @@ class Trainer:
 
             # -- periodic test --
             if step_id % args.test_every == 0:
-                eval_bundles(
+                test_results = eval_bundles(
                     model, bundles, self._routine_aux(),
                     make_step_fn=lambda b: lambda: TestEpoch(
                         b["test_loader"], model, args,
@@ -223,6 +234,11 @@ class Trainer:
                     eval_fn=eval_aux, agg=average_eval_metrics,
                     mylogger=mylogger, tag="[Test]",
                 )
+                for b, (mae, rmse, mape, mape_10, mape_20, target_diag_stats) in zip(bundles, test_results):
+                    mylogger.info(
+                        f"[Test] step {step_id}/{self.total_steps} {b['key']} "
+                        f"mae:{fmt(mae)} rmse:{fmt(rmse)} mape:{fmt(mape)}"
+                    )
 
             if checkpoint.should_stop():
                 mylogger.info("early stop")
@@ -267,6 +283,10 @@ class Trainer:
         reporter.draw_chart()
         return final_results
 
+
+# ---------------------------------------------------------------------------
+# Backward-compatible entry point
+# ---------------------------------------------------------------------------
 
 
 def Train(args, mylogger, model, data_bundles, log_dir, modelpath=None):

@@ -27,7 +27,7 @@ def check_dir(path: str, mkdir=False):
 
 
 def get_time_str():
-    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
+    return time.strftime("%Y-%m-%d_%H%M%S", time.localtime(time.time()))
 
 
 def get_adjacency_matrix(distance_df_filename, num_of_vertices, id_filename=None):

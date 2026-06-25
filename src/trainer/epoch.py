@@ -15,6 +15,10 @@ from window import (
     target_instance_chunks,
 )
 
+# ---------------------------------------------------------------------------
+# Aux-pool evaluation
+# ---------------------------------------------------------------------------
+
 
 def routine_aux_pool_sets(all_aux_pool_sets, args):
     return all_aux_pool_sets[: args.routine_aux_pool_sets]
@@ -28,6 +32,10 @@ def eval_aux(model, aux_pool_sets, step_fn, agg):
         items.append(step_fn())
     return agg(items)
 
+
+# ---------------------------------------------------------------------------
+# Eval-budget helpers
+# ---------------------------------------------------------------------------
 
 
 def _ceil_div(a, b):
@@ -85,15 +93,26 @@ def _budget_subsample_loader(loader, eval_instance_budget):
     return DataLoader(Subset(dataset, indices), **kwargs)
 
 
+# ---------------------------------------------------------------------------
+# Window preparation
+# ---------------------------------------------------------------------------
+
 
 def unpack_batch(batch):
     if len(batch) == 2:
         input, target = batch
-        return input, target, None
+        return input, target, None, None
     if len(batch) == 3:
+        input, target, mask = batch
+        return input, target, mask, None
+    if len(batch) == 4:
         return batch
-    raise ValueError(f"batch must contain 2 or 3 tensors, got {len(batch)}")
+    raise ValueError(f"batch must contain 2, 3, or 4 tensors, got {len(batch)}")
 
+
+# ---------------------------------------------------------------------------
+# Epoch loops
+# ---------------------------------------------------------------------------
 
 
 def TrainEpoch(
@@ -125,27 +144,43 @@ def TrainEpoch(
         batch_iter = _budget_subsample_loader(loader, eval_instance_budget)
 
     for batch in batch_iter:
-        input, target, mask = unpack_batch(batch)
-        nb = NormalizedBatch(input, target, mask, args, device)
+        input, target, context_mask, eval_mask = unpack_batch(batch)
+        nb = NormalizedBatch(input, target, context_mask, args, device, eval_mask=eval_mask)
         model_input = nb.model_input
         B, N, _ = model_input.shape
+        # Full encode: encode all nodes once, shared across all chunks
+        with (
+            torch.set_grad_enabled(is_training),
+            torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True),
+        ):
+            bank = model.encode(model_input, mask=nb.tokenizer_mask)
 
         eval_full_nodes = not is_training
         for sample_ids, node_ids in target_instance_chunks(B, N, target_batch_size, device, full=eval_full_nodes):
             if forward_budget is not None and chunk_count >= forward_budget:
                 break
             target_sample = gather_target_instances(nb.target, sample_ids, node_ids)
+
+            # For impute_full: gather loss mask so we only compute loss on
+            # truly-missing positions (mask==0), not on observed positions.
+            loss_mask_sample = None
+            if nb.mask is not None:
+                loss_mask_sample = gather_target_instances(nb.mask, sample_ids, node_ids)
+
             possible_count = target_sample.numel()
+            if loss_mask_sample is not None:
+                possible_count = (loss_mask_sample == 0).sum().item()
+                if possible_count == 0:
+                    continue
 
             with (
                 torch.set_grad_enabled(is_training),
                 torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True),
             ):
-                bank = model.encode(model_input, node_ids)
                 predict = model.predict(bank, sample_ids, node_ids)
                 predict = predict.view(sample_ids.numel(), -1, args.output_dim)
                 predict = nb.restore(predict, sample_ids, node_ids)
-                loss_mean = compute_loss(predict, target_sample, loss_fn)
+                loss_mean = compute_loss(predict, target_sample, loss_fn, mask=loss_mask_sample)
             loss_total += loss_mean.detach().item() * possible_count
             element_total += possible_count
 
@@ -196,18 +231,19 @@ def TestEpoch(
             model.resample_aux_pools()
         targets = []
         predicts = []
+        eval_masks = []
 
         target_batch_size = eval_chunk_size(args)
         batch_iter = _budget_subsample_loader(loader, eval_instance_budget)
         eval_full_nodes = full_nodes or eval_instance_budget is not None
         for batch in batch_iter:
-            input, target, mask = unpack_batch(batch)
-            nb = NormalizedBatch(input, target, mask, args, device)
+            input, target, context_mask, eval_mask = unpack_batch(batch)
+            nb = NormalizedBatch(input, target, context_mask, args, device, eval_mask=eval_mask)
             model_input = nb.model_input
             B, N, _ = model_input.shape
 
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                bank = model.encode(model_input)  # target_node_ids=None → full encode
+                bank = model.encode(model_input, mask=nb.tokenizer_mask)  # target_node_ids=None → full encode
                 for sample_ids, node_ids in target_instance_chunks(
                     B, N, target_batch_size, device, full=eval_full_nodes
                 ):
@@ -217,22 +253,31 @@ def TestEpoch(
                     target_sample = gather_target_instances(nb.target, sample_ids, node_ids)
                     targets.append(target_sample.detach())
                     predicts.append(predict.detach())
+                    if nb.mask is not None:
+                        mask_sample = gather_target_instances(nb.mask, sample_ids, node_ids)
+                        eval_masks.append(mask_sample.detach())
 
         if not targets:
             raise RuntimeError("Evaluation produced no target positions")
 
         targets = torch.concat(targets, dim=0)
         predicts = torch.concat(predicts, dim=0)
+        eval_masks_tensor = torch.concat(eval_masks, dim=0) if eval_masks else None
 
-        mae, rmse, mape, mape_10, mape_20 = cal_metrics(predicts=predicts, targets=targets)
-        target_stats = target_diag_stats(targets)
+        mae, rmse, mape, mape_10, mape_20 = cal_metrics(
+            predicts=predicts, targets=targets, eval_mask=eval_masks_tensor
+        )
 
     if save and log_dir is not None:
         result = {"targets": targets.cpu().numpy(), "predicts": predicts.cpu().numpy()}
         np.savez(os.path.join(log_dir, "test.npz"), **result)
 
-    return mae, rmse, mape, mape_10, mape_20, target_stats
+    return mae, rmse, mape, mape_10, mape_20, target_diag_stats(targets)
 
+
+# ---------------------------------------------------------------------------
+# Bundle evaluation — used by both validation and test
+# ---------------------------------------------------------------------------
 
 
 def eval_bundles(model, bundles, aux_pools_map, make_step_fn, eval_fn, agg, mylogger, tag):

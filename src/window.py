@@ -1,9 +1,23 @@
 import torch
 
 
-def compute_loss(predict, target, loss_fn):
-    return loss_fn(predict, target)
+# ---------------------------------------------------------------------------
+# Loss
+# ---------------------------------------------------------------------------
 
+def compute_loss(predict, target, loss_fn, mask=None):
+    if mask is None:
+        return loss_fn(predict, target)
+    # Only compute loss on masked (missing) positions: mask == 0
+    missing = (mask == 0)
+    if not missing.any():
+        return torch.tensor(0.0, device=predict.device, dtype=predict.dtype)
+    return loss_fn(predict[missing], target[missing])
+
+
+# ---------------------------------------------------------------------------
+# Normalization
+# ---------------------------------------------------------------------------
 
 def normalize_observed_context(input, context_mask=None):
     if context_mask is None:
@@ -29,6 +43,10 @@ def restore_instance_scale(predict, context_mean, context_std, sample_ids, node_
     std = context_std[:, :, :, :output_dim][sample_ids, 0, node_ids, :]
     return predict * (std.unsqueeze(1) + 1e-6) + mean.unsqueeze(1)
 
+
+# ---------------------------------------------------------------------------
+# Instance indexing / gathering
+# ---------------------------------------------------------------------------
 
 def target_instance_chunks(window_count, node_count, batch_size, device, full):
     pool_size = window_count * node_count

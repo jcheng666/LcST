@@ -89,18 +89,35 @@ class SpatialReasoner(nn.Module):
         target_ids: Int[Tensor, "C"] | None = None,
         aux_ids: Int[Tensor, "C K"] | None = None,
         node_pe: Float[Tensor, "N D"] | None = None,
+        global_tok: Float[Tensor, "C 1 D"] | None = None,
+        global_pe: Float[Tensor, "D"] | None = None,
     ) -> Float[Tensor, "C H"]:
-        """Run a batch of (target, aux) token tuples through the backbone."""
+        """Run a batch of (target, aux) token tuples through the backbone.
+
+        When global_tok is provided, it is prepended to the prompt sequence
+        as a mean-pooled summary of all graph nodes, giving the backbone
+        access to global spatial context.
+        """
         B = target_tok.shape[0]
 
+        # ---- inject Laplacian PE ----
         if node_pe is not None and target_ids is not None:
             target_tok = target_tok + node_pe[target_ids].unsqueeze(1)
             if aux_ids is not None:
                 aux_tok = aux_tok + node_pe[aux_ids]
 
+        # ---- inject global token PE ----
+        if global_tok is not None and global_pe is not None:
+            global_tok = global_tok + global_pe
+
         sep = self.sep_token.expand(B, -1, -1)
         soft_prompt = self.soft_prompt.expand(B, -1, -1)
-        hidden = torch.cat([soft_prompt, aux_tok, sep, target_tok], dim=1)
+
+        # Build prompt: [global_tok] soft_prompt aux_tok sep target_tok
+        if global_tok is not None:
+            hidden = torch.cat([global_tok, soft_prompt, aux_tok, sep, target_tok], dim=1)
+        else:
+            hidden = torch.cat([soft_prompt, aux_tok, sep, target_tok], dim=1)
 
         s_state = self.basemodel(hidden)
         s_target = s_state[:, -1, :]

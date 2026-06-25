@@ -113,15 +113,18 @@ class MaskedDataset(BasicDataset):
         Float[Tensor, "Tin N Fin"],
         Float[Tensor, "Ttarget N Fin"],
         Float[Tensor, "Tin N Fin"],
+        Float[Tensor, "Tin N Fin"],
     ]:
 
         l,r = self.sample_index[index]
         history, target = super().__getitem__(index)
+        context_mask = self.mask[l:r-self.output_len, :, :self.input_dim]
 
         return (
             history,
             target,
-            self.mask[l:r-self.output_len, :, :self.input_dim],
+            context_mask,
+            context_mask,  # eval_mask same as context_mask for forecast
         )
 
 
@@ -147,17 +150,71 @@ class LastWindowMaskedDataset(LastWindowDataset):
         Float[Tensor, "Tin N Fin"],
         Float[Tensor, "Ttarget N Fin"],
         Float[Tensor, "Tin N Fin"],
+        Float[Tensor, "Ttarget N Fin"],
     ]:
 
         l,r = self.sample_index[index]
         history, target = super().__getitem__(index)
-        context_mask = self.mask[l:r, :, :self.input_dim].clone()
+        original_mask = self.mask[l:r, :, :self.input_dim].clone()
+        context_mask = original_mask.clone()
         context_mask[-self.output_len:] = 0
+        # eval_mask: original mask for target positions (used for loss/metric masking)
+        eval_mask = original_mask[-self.output_len:, :, :]
 
         return (
             history,
             target,
             context_mask,
+            eval_mask,
+        )
+
+
+class FullWindowMaskedDataset(BasicDataset):
+    """Dataset for impute_full target_mode: reconstruct the entire window.
+
+    History = full window (sample_len steps).
+    Target = full window (sample_len steps).
+    Mask = original missing pattern, NOT modified (no forced tail masking).
+    Loss is computed only on mask=0 positions (truly missing data).
+    """
+    mask: torch.Tensor
+
+    def __init__(self, history, target, mask, sample_index,
+                    sample_len, output_len, input_dim, output_dim, training=False) -> None:
+        # output_len == sample_len in impute_full mode
+        super().__init__(
+            history=history,
+            target=target,
+            sample_index=sample_index,
+            sample_len=sample_len,
+            output_len=output_len,
+            input_dim=input_dim,
+            output_dim=output_dim,
+            training=training,
+        )
+        self.mask = mask
+
+    @jaxtyped(typechecker=beartype)
+    def __getitem__(self, index: int) -> Tuple[
+        Float[Tensor, "Tin N Fin"],
+        Float[Tensor, "Ttarget N Fin"],
+        Float[Tensor, "Tin N Fin"],
+        Float[Tensor, "Tin N Fin"],
+    ]:
+
+        l, r = self.sample_index[index]
+        # History: full window (sample_len steps)
+        history = self.history[l:r, :, :self.input_dim]
+        # Target: full window (same as history — reconstruct all positions)
+        target = self.target[l:r, :, :self.input_dim]
+        # Mask: original pattern, no modification
+        context_mask = self.mask[l:r, :, :self.input_dim].clone()
+
+        return (
+            history,
+            target,
+            context_mask,
+            context_mask,  # eval_mask = context_mask (no forced tail zeros)
         )
 
 
@@ -196,8 +253,15 @@ class DataProvider():
                        input_dim, output_dim, training=True, target_mode="forecast"):
         data = self.data[data_range[0]:data_range[1]]
         sample_index = generate_sample_index_by_sliding_window(data, sample_len=window_size)
-        dataset_cls = LastWindowDataset if target_mode == "impute_last" else BasicDataset
-        masked_dataset_cls = LastWindowMaskedDataset if target_mode == "impute_last" else MaskedDataset
+        if target_mode == "impute_full":
+            dataset_cls = BasicDataset
+            masked_dataset_cls = FullWindowMaskedDataset
+        elif target_mode == "impute_last":
+            dataset_cls = LastWindowDataset
+            masked_dataset_cls = LastWindowMaskedDataset
+        else:
+            dataset_cls = BasicDataset
+            masked_dataset_cls = MaskedDataset
         if self.mask is None:
             return dataset_cls(
                 history=data,
@@ -296,6 +360,7 @@ timestampfun = {
     'PEMS03': lambda T : generatetimestamp(start='20180901 00:00:00',periods=T,freq='5min'),
     'NYCTAXI': lambda T : generatetimestamp(start='20160401 00:00:00',periods=T,freq='30min'),
     'CHIBIKE': lambda T : generatetimestamp(start='20160401 00:00:00',periods=T,freq='30min'),
+    'XTRAFFIC': lambda T : generatetimestamp(start='20220101 00:00:00',periods=T,freq='5min'),
 }
 
 class PEMSFLOWProvider(DataProvider):
@@ -367,3 +432,70 @@ class NYCTAXIProvider(DataProvider):
         return data, node_num, features, \
                adj_mx, distance_mx, \
                timestamp
+
+
+class XTrafficProvider(DataProvider):
+    """Provider for the Xtraffic California highway dataset.
+
+    Expected data_path layout (directory mode)::
+
+        data_path/
+          p01_done.npy  ...  p12_done.npy   (T, N, F) float64, 5-min resolution
+          adj_matrix.npy                  (N, N) float64 binary adjacency
+          dis_matrix.npy                  (N, N) float64 distance matrix
+
+    Alternatively a pre-concatenated ``.npz`` with key ``data``.
+    NaN values are replaced with zero and an observation mask is produced.
+    """
+
+    def read_data(self, data_path, adj_path=None):
+        import glob as _glob
+
+        # --- load raw data --------------------------------------------------
+        if os.path.isfile(data_path) and data_path.endswith('.npz'):
+            raw = np.load(data_path)['data'].astype(np.float32)
+        elif os.path.isdir(data_path):
+            candidates = sorted(_glob.glob(os.path.join(data_path, 'p[0-9][0-9]_done.npy')))
+            if not candidates:
+                raise FileNotFoundError(f"No p*_done.npy partition files found in {data_path}")
+            parts = [np.load(p).astype(np.float32) for p in candidates]
+            raw = np.concatenate(parts, axis=0)
+        else:
+            raise ValueError(f"data_path must be a directory of p*_done.npy files or a .npz file: {data_path}")
+
+        # Detect and fix node-first layout (year sub-dirs store (N,T,F) instead of (T,N,F))
+        if raw.ndim == 3 and raw.shape[0] > raw.shape[2] and raw.shape[1] > 10000:
+            if raw.shape[1] > raw.shape[0]:
+                raw = raw.transpose(1, 0, 2)
+
+        # --- mask from NaN positions ---------------------------------------
+        mask = (~np.isnan(raw)).astype(np.float32)
+        raw = np.nan_to_num(raw, nan=0.0, copy=False)
+
+        data = torch.from_numpy(raw)
+        mask_tensor = torch.from_numpy(mask)
+
+        T, node_num, features = data.shape
+
+        # --- adjacency / distance -------------------------------------------
+        parent_dir = os.path.dirname(data_path) if os.path.isfile(data_path) else data_path
+        if adj_path is None:
+            adj_path = os.path.join(parent_dir, 'adj_matrix.npy')
+        if not os.path.exists(adj_path):
+            raise FileNotFoundError(f"adjacency matrix not found: {adj_path}")
+        adj_mx = np.load(adj_path).astype(np.float32)
+
+        dis_path = os.path.join(os.path.dirname(adj_path), 'dis_matrix.npy')
+        if os.path.exists(dis_path):
+            distance_mx = np.load(dis_path).astype(np.float32)
+        else:
+            distance_mx = adj_mx.copy()
+
+        adj_mx = np.where(np.eye(node_num).astype('bool'), 1, adj_mx)
+
+        # --- timestamps -----------------------------------------------------
+        timestamp = timestampfun[self.dataset](T)
+
+        return data, node_num, features, \
+               adj_mx, distance_mx, \
+               timestamp, mask_tensor

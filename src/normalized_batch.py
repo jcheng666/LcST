@@ -9,9 +9,14 @@ import torch
 
 class NormalizedBatch:
     """Holds a normalized model input together with the context statistics
-    needed to restore predictions to the original data scale."""
+    needed to restore predictions to the original data scale.
 
-    def __init__(self, input, target, mask, args, device):
+    mask (for loss/eval): set from eval_mask for impute_last and impute_full
+    so that loss/metrics are computed only on originally-missing positions.
+    tokenizer_mask: the context_mask reshaped for the tokenizer.
+    """
+
+    def __init__(self, input, target, mask, args, device, eval_mask=None):
         self.args = args
         self.device = device
 
@@ -19,18 +24,38 @@ class NormalizedBatch:
         target = target.to(device=device, dtype=torch.float32, non_blocking=True)
 
         self.target = target
+        self.mask = None
+        self.tokenizer_mask = None
         context_mask = None
         if mask is not None:
             context_mask = mask.to(device=device, dtype=torch.float32, non_blocking=True)
+            # Store mask for loss/eval: only on originally-missing positions
+            if eval_mask is not None:
+                eval_mask = eval_mask.to(device=device, dtype=torch.float32, non_blocking=True)
+                self.mask = eval_mask
+            elif args.target_mode == "impute_full":
+                # For impute_full, the mask itself is the original pattern (no modification)
+                self.mask = context_mask
+
+            # Store tokenizer mask (for input feature)
+            self.tokenizer_mask = context_mask
 
         self.model_input, self.context_mean, self.context_std = _normalize(input, context_mask)
         B, T, N, _ = self.model_input.shape
         self.model_input = self.model_input.permute(0, 2, 1, 3).contiguous().view(B, N, -1)
 
+        # tokenizer_mask must match model_input shape (B, N, TF)
+        if self.tokenizer_mask is not None:
+            self.tokenizer_mask = self.tokenizer_mask.permute(0, 2, 1, 3).contiguous().view(B, N, -1)
+
     def restore(self, predict, sample_ids, node_ids):
         return _restore_scale(predict, self.context_mean, self.context_std,
                               sample_ids, node_ids)
 
+
+# ---------------------------------------------------------------------------
+# Internal helpers (migrated from window.py)
+# ---------------------------------------------------------------------------
 
 def _normalize(input, context_mask):
     if context_mask is None:
